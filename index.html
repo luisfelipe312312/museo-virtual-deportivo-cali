@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Museo Virtual — Deportivo Cali (Sala 3D)</title>
+
+<script>
+  // Sin WebGL no hay sala 3D: pasar al recorrido simple (respaldo).
+  (function () {
+    try {
+      var c = document.createElement("canvas");
+      if (window.WebGLRenderingContext && (c.getContext("webgl2") || c.getContext("webgl"))) return;
+    } catch (e) {}
+    location.replace("recorrido-simple.html");
+  })();
+</script>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="https://unpkg.com/@google/model-viewer@4.4.0/dist/model-viewer.min.js"></script>
+
+<script type="module" async>
+  // Bienvenida: imagen de fondo (`hero`) y escudo (`escudo`) de piezas.js. Este módulo pequeño
+  // (async) se ejecuta apenas se lee piezas.js, sin esperar a model-viewer ni a three.js, así la
+  // imagen se precarga pronto.
+  // Cada imagen aparece (con un fundido) solo cuando ya está decodificada: no hay parpadeo.
+  // Con null no se pide nada.
+  import * as contenido from "./piezas.js";
+  const mostrarAlCargar = (img, ruta, nombre) => {
+    img.decoding = "async";
+    img.src = ruta;
+    img.decode()
+      .then(() => img.classList.add("lista"))
+      .catch(() => console.warn(`No se pudo cargar ${nombre} ${ruta}`));
+  };
+  if (contenido.hero) mostrarAlCargar(document.getElementById("heroFondo"), contenido.hero, "la imagen de la bienvenida");
+  if (contenido.escudo) mostrarAlCargar(document.getElementById("escudoBienvenida"), contenido.escudo, "el escudo");
+</script>
+
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0d1b2a;
+    color: #f1f1f1;
+    font-family: -apple-system, system-ui, sans-serif;
+  }
+  #lienzo {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    touch-action: none;
+  }
+
+  /* HUD de progreso */
+  #hud {
+    position: fixed;
+    top: calc(12px + env(safe-area-inset-top));
+    left: calc(12px + env(safe-area-inset-left));
+    z-index: 2;
+    background: rgba(13, 27, 42, 0.78);
+    border-left: 3px solid #1e7a3e;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    pointer-events: none;
+  }
+
+  /* Botón de música (solo si `musica` en piezas.js tiene una ruta y el archivo existe) */
+  #btnMusica {
+    position: fixed;
+    top: calc(12px + env(safe-area-inset-top));
+    right: calc(12px + env(safe-area-inset-right));
+    z-index: 4; /* sobre la capa "haz clic" (3); las fichas (4, más abajo en el HTML) lo tapan */
+    background: rgba(13, 27, 42, 0.78);
+    color: #f1f1f1;
+    border: 1px solid #1e7a3e;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  #btnMusica[hidden] { display: none; }
+
+  /* Aviso de interacción al acercarse a un pedestal */
+  #avisoAccion {
+    position: fixed;
+    left: 50%;
+    bottom: calc(28px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 2;
+    display: none;
+    background: #1e7a3e;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 12px 18px;
+    font-size: 0.95rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #avisoAccion.visible { display: block; }
+  /* En pantallas táctiles, por encima del joystick para que no se tapen */
+  @media (pointer: coarse) {
+    #avisoAccion { bottom: calc(160px + env(safe-area-inset-bottom)); }
+  }
+
+  /* Joystick virtual (solo pantallas táctiles) */
+  #joystick {
+    position: fixed;
+    left: calc(24px + env(safe-area-inset-left));
+    bottom: calc(24px + env(safe-area-inset-bottom));
+    z-index: 2;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.12);
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    touch-action: none;
+    display: none;
+  }
+  #joystick.visible { display: block; }
+  #perilla {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 52px;
+    height: 52px;
+    margin: -26px 0 0 -26px;
+    border-radius: 50%;
+    background: rgba(30, 122, 62, 0.9);
+    pointer-events: none;
+  }
+
+  /* Capa "haz clic para entrar" (escritorio, pointer lock) */
+  #inicio {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(13, 27, 42, 0.6);
+    cursor: pointer;
+    text-align: center;
+  }
+  #inicio.visible { display: flex; }
+  #inicio .caja {
+    background: #0d1b2a;
+    border: 1px solid #1e7a3e;
+    border-radius: 8px;
+    padding: 20px 24px;
+    max-width: 420px;
+    font-size: 0.9rem;
+    line-height: 1.6;
+  }
+  #inicio strong { font-size: 1rem; }
+
+  /* Pantalla de bienvenida: se ve al abrir la sala y se cierra con "Iniciar recorrido" */
+  #bienvenida {
+    position: fixed;
+    inset: 0;
+    z-index: 7;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: calc(24px + env(safe-area-inset-top)) 24px calc(24px + env(safe-area-inset-bottom));
+    background: rgba(10, 22, 16, 0.82);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    text-align: center;
+  }
+  #bienvenida[hidden] { display: none; }
+  /* Imagen de fondo (opción `hero` de piezas.js) con degradado oscuro encima; el contenido va
+     por encima de los dos. El jugador está a la derecha de la imagen: en pantallas verticales
+     se recorta hacia ese lado. */
+  #heroFondo {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: 50% 50%;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+  }
+  #heroFondo.lista { opacity: 1; }
+  #heroFondo.lista + .degradado { display: block; }
+  #bienvenida .degradado {
+    display: none;
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse at center, rgba(4, 12, 8, 0.72) 0%, rgba(4, 12, 8, 0.45) 60%, rgba(4, 12, 8, 0.3) 100%),
+      linear-gradient(to bottom, rgba(4, 12, 8, 0.35), rgba(4, 12, 8, 0.65));
+  }
+  @media (max-aspect-ratio: 1/1) {
+    #heroFondo { object-position: 88% 50%; }
+    #bienvenida .degradado {
+      background: linear-gradient(to bottom, rgba(4, 12, 8, 0.45), rgba(4, 12, 8, 0.72) 40%, rgba(4, 12, 8, 0.72) 70%, rgba(4, 12, 8, 0.5));
+    }
+  }
+  @media (prefers-reduced-motion: reduce) { #heroFondo { transition: none; } }
+  #bienvenida > :not(#heroFondo):not(.degradado) { position: relative; } /* sobre el fondo */
+  #bienvenida h1, #bienvenida p { text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); }
+  /* Escudo sobre el título (opción `escudo` de piezas.js); oculto hasta que carga */
+  #escudoBienvenida { display: none; max-height: clamp(72px, 14vh, 130px); max-width: 60vw; object-fit: contain; }
+  #escudoBienvenida.lista { display: block; }
+  #bienvenida h1 {
+    margin: 0;
+    max-width: 640px;
+    font-size: clamp(1.5rem, 5vw, 2.4rem);
+    line-height: 1.2;
+  }
+  #bienvenida .subtitulo { margin: 0; max-width: 520px; color: #cfe8d6; font-size: 1rem; line-height: 1.5; }
+  #bienvenida .controles { margin: 0; max-width: 520px; color: #9fb5a8; font-size: 0.85rem; line-height: 1.5; }
+  #btnIniciar {
+    margin-top: 10px;
+    background: #1e7a3e;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 14px 28px;
+    font-family: inherit;
+    font-size: 1.05rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #btnIniciar:hover, #btnIniciar:focus-visible { background: #23904a; }
+  /* Antes de iniciar no se ven el progreso, el joystick ni el aviso de la pieza */
+  body:not(.recorriendo) #hud,
+  body:not(.recorriendo) #joystick,
+  body:not(.recorriendo) #avisoAccion,
+  body:not(.recorriendo) #btnMusica { display: none !important; }
+
+  /* Panel de la pieza y modal de RA */
+  .capa {
+    position: fixed;
+    inset: 0;
+    z-index: 4;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.55);
+  }
+  .capa.visible { display: flex; }
+  #capaRA { z-index: 5; }
+  .panel {
+    width: 100%;
+    max-width: 440px;
+    background: #0d1b2a;
+    border: 1px solid #1e7a3e;
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .panel h2 { margin: 0 0 8px; font-size: 1.05rem; }
+  .panel p { margin: 0; font-size: 0.9rem; line-height: 1.45; color: #cfd8e0; }
+  #capaRA .panel { max-width: 720px; padding: 12px; }
+  model-viewer {
+    width: 100%;
+    height: 65vh;
+    background: #14263b;
+    border-radius: 6px;
+  }
+  .botones { display: flex; gap: 10px; margin-top: 16px; }
+  .botones button {
+    flex: 1;
+    background: #1e7a3e;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  .botones button:disabled {
+    background: #2a3a4a;
+    color: #8a9aaa;
+    cursor: not-allowed;
+  }
+  .botones button.secundario {
+    background: transparent;
+    border: 1px solid #1e7a3e;
+    color: #cfe8d6;
+  }
+
+  /* Pantalla de recompensa al completar (cosmética) */
+  #final {
+    position: fixed;
+    inset: 0;
+    z-index: 6;
+    display: none;
+    overflow: auto;
+    background: #0d1b2a;
+    text-align: center;
+    padding: 60px 24px;
+  }
+  #final.activo { display: block; }
+  #final h2 { font-size: 1.3rem; margin-bottom: 8px; }
+  #final p { color: #cfd8e0; font-size: 0.95rem; line-height: 1.5; }
+  .insignia { font-size: 3rem; margin: 16px 0; }
+  #final .codigo { font-family: ui-monospace, monospace; letter-spacing: 0.08em; color: #f1f1f1; }
+  #final button {
+    margin-top: 20px;
+    background: transparent;
+    border: 1px solid #1e7a3e;
+    color: #1e7a3e;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<!--
+  SALA 3D — experiencia principal del museo.
+  El contenido (array PIEZAS) vive en piezas.js: para cambiar piezas se edita solo ese archivo.
+  Si el navegador no tiene WebGL, esta página redirige a recorrido-simple.html.
+
+  La pantalla final es una demostración: el código que muestra es un ejemplo,
+  rotulado como tal, y no corresponde a ningún beneficio real.
+-->
+
+<canvas id="lienzo"></canvas>
+
+<div id="hud">Piezas visitadas: 0/0</div>
+
+<button id="btnMusica" hidden></button>
+
+<button id="avisoAccion">Toca / presiona E para ver la pieza</button>
+
+<div id="joystick"><div id="perilla"></div></div>
+
+<div id="bienvenida">
+  <img id="heroFondo" alt="">
+  <div class="degradado"></div>
+  <img id="escudoBienvenida" alt="Escudo del Deportivo Cali">
+  <h1 id="tituloBienvenida"></h1>
+  <p class="subtitulo">Recorre las vitrinas con los títulos del Deportivo Cali y descubre la historia de cada copa.</p>
+  <p class="controles" id="controlesBienvenida"></p>
+  <button id="btnIniciar">Iniciar recorrido</button>
+</div>
+
+<div id="inicio">
+  <div class="caja">
+    <strong>Haz clic para recorrer la sala</strong><br>
+    WASD o flechas: moverte · Mouse: mirar<br>
+    E: ver la pieza cercana · Esc: soltar el mouse
+  </div>
+</div>
+
+<div class="capa" id="capaPanel">
+  <div class="panel">
+    <h2 id="tituloPieza"></h2>
+    <p id="textoPieza"></p>
+    <div class="botones">
+      <button id="btnRA">Ver en RA / rotar</button>
+      <button id="btnCerrarPanel" class="secundario">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<div class="capa" id="capaRA">
+  <div class="panel">
+    <model-viewer id="visor"
+      ar
+      ar-modes="scene-viewer quick-look webxr"
+      camera-controls
+      auto-rotate
+      shadow-intensity="1"
+      environment-image="neutral"
+      exposure="1">
+    </model-viewer>
+    <div class="botones">
+      <button id="btnCerrarRA" class="secundario">Volver</button>
+    </div>
+  </div>
+</div>
+
+<div id="final">
+  <div class="insignia">🏆</div>
+  <h2>¡Recorrido completo!</h2>
+  <p>Gracias por completar el recorrido. En un museo oficial recibirías aquí un código de
+     descuento para la tienda del club.</p>
+  <p><em>(Demostración: este beneficio es un ejemplo y no está activo.)</em></p>
+  <p>Código de ejemplo: <strong class="codigo">DEMO-MUSEO</strong></p>
+  <button id="btnReiniciar">Volver a empezar</button>
+</div>
+
+<script type="module">
+  import * as THREE from "three";
+  import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+  import { DRACOLoader } from "three/addons/loaders/DRACOLoader.js";
+  import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+  import * as contenido from "./piezas.js";
+  const PIEZAS = contenido.PIEZAS;
+  const TITULO_SALA = contenido.tituloSala ?? "[Título de la sala]";
+  const FOTOS = contenido.fotos ?? [];
+  const VISITANTES = contenido.visitantes ?? true;
+
+  // ---------- Medidas (metros) ----------
+  // El largo de la sala (x) depende del número de piezas: repartidas en las dos paredes
+  // largas, con SEPARACION metros entre vitrinas vecinas de una misma pared.
+  const SEPARACION = 3.5, MARGEN_EXTREMOS = 3;
+  const POR_PARED = Math.ceil(PIEZAS.length / 2);
+  const ANCHO = Math.max(12, (POR_PARED - 1) * SEPARACION + 2 * MARGEN_EXTREMOS);
+  const FONDO = 6, ALTO = 3.5;               // corredor: x = largo, z = ancho
+  const ALTURA_OJOS = 1.6;
+  const RADIO_JUGADOR = 0.3;
+  const VELOCIDAD = 2.2;                       // m/s
+  const RADIO_PEDESTAL = 0.35, ALTO_PEDESTAL = 1.0; // radio de colisión y altura de la base
+  const RADIO_VITRINA = 0.5, ALTO_VIDRIO = 1.0;       // tamaño visual: el modelo de 0.8 m cabe dentro
+  const TAMANO_PIEZA = 0.8;                    // mayor dimensión de cada modelo
+  const DISTANCIA_INTERACCION = 2;
+  const SENSIBILIDAD_MOUSE = 0.0022, SENSIBILIDAD_TACTIL = 0.005;
+  const INICIO = { x: -ANCHO / 2 + 1, z: 0, yaw: -Math.PI / 2 }; // junto a la pared oeste, mirando hacia el rótulo
+  // Carga diferida de los .glb (ajustable en piezas.js)
+  const DISTANCIA_CARGA = contenido.distanciaCarga ?? 6;
+  const DISTANCIA_LIBERAR = Math.max(DISTANCIA_CARGA, contenido.distanciaLiberar ?? 10);
+  const MAX_MODELOS = Math.max(1, contenido.maxModelosCargados ?? 5);
+  const LIMITE_PESO = 5 * 1024 * 1024;               // aviso en consola si un .glb pesa más
+
+  const VERDE = 0x1e7a3e;
+  // Paleta de galería: paredes blanco hueso, techo blanco, piso de madera clara y bases claras
+  const PISO = 0x8f7a62, PARED = 0xf2eee6, TECHO = 0xf1efea, BASE_VITRINA = 0xe2ddd3, FILETE = 0xc9c2b6, MARCO = 0x2e2a26;
+  const BANCO_ASIENTO = 0x8a6a4a, BANCO_BASE = 0x3a3631;
+  const CLAVE_PROGRESO = "museoCali_progreso"; // misma clave que recorrido-simple.html
+
+  const $ = (id) => document.getElementById(id);
+  const lienzo = $("lienzo"), hud = $("hud"), avisoAccion = $("avisoAccion");
+  const joystick = $("joystick"), perilla = $("perilla"), inicio = $("inicio");
+  const capaPanel = $("capaPanel"), capaRA = $("capaRA"), visor = $("visor");
+  const pantallaFinal = $("final"), btnRA = $("btnRA");
+  const esTactil = matchMedia("(pointer: coarse)").matches;
+
+  // Pantalla de bienvenida: título de la sala (tituloSala en piezas.js) y controles según el equipo
+  $("tituloBienvenida").textContent = TITULO_SALA;
+  $("controlesBienvenida").textContent = esTactil
+    ? "Joystick: moverte · Arrastra con un dedo: mirar · Toca el botón junto a una vitrina para ver la pieza"
+    : "WASD o flechas: moverte · Mouse: mirar · E: ver la pieza cercana · Esc: soltar el mouse";
+
+  // ---------- Progreso ----------
+  function cargarProgreso() {
+    try {
+      const guardado = JSON.parse(localStorage.getItem(CLAVE_PROGRESO) || "[]");
+      return new Set(guardado.filter((i) => Number.isInteger(i) && i >= 0 && i < PIEZAS.length));
+    } catch (e) {
+      return new Set(); // localStorage bloqueado o dato corrupto: empezar de cero
+    }
+  }
+  function guardarProgreso() {
+    try {
+      localStorage.setItem(CLAVE_PROGRESO, JSON.stringify([...visitadas]));
+    } catch (e) {
+      // localStorage puede fallar (modo privado, etc.) — el recorrido sigue funcionando igual
+    }
+  }
+  function actualizarHUD() {
+    hud.textContent = `Progreso: ${visitadas.size}/${PIEZAS.length}`;
+  }
+  let visitadas = cargarProgreso();
+  actualizarHUD();
+
+  // ---------- Render ----------
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas: lienzo, antialias: true });
+  } catch (e) {
+    location.replace("recorrido-simple.html");
+    throw e;
+  }
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight, false);
+
+  const escena = new THREE.Scene();
+  escena.background = new THREE.Color(0x0d1b2a);
+  const camara = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 50);
+  camara.rotation.order = "YXZ";
+
+  // En pantallas verticales (celular) se abre el ángulo vertical para no perder los lados de la sala
+  function ajustarCamara() {
+    const aspecto = innerWidth / innerHeight;
+    const vertical = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(30)) / aspecto);
+    camara.fov = Math.min(100, Math.max(70, THREE.MathUtils.radToDeg(vertical)));
+    camara.aspect = aspecto;
+    camara.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight, false);
+  }
+  ajustarCamara();
+  addEventListener("resize", ajustarCamara);
+
+  // Dos luces de relleno, sin sombras dinámicas (los paneles del techo son solo emisivos).
+  // Hemisférica de tono neutro cálido; su color de abajo (rebote del piso claro) ilumina el
+  // techo y la parte baja de las copas. Intensidades medidas para que las paredes blanco hueso
+  // no se quemen y las copas no pierdan brillo.
+  escena.add(new THREE.HemisphereLight(0xfff9f0, 0xd2cabe, 2.2));
+  const luz = new THREE.DirectionalLight(0xffffff, 1.6);
+  luz.position.set(-2, ALTO, 2);
+  escena.add(luz);
+
+  // Entorno para los reflejos de los .glb: sin él, los materiales metálicos (oro, plata) se ven
+  // casi negros. Solo afecta a materiales PBR (los modelos); paredes, piso y vidrio no cambian.
+  // Intensidad baja para no aclarar la sala; se aplica a cada material al cargar el modelo.
+  const INTENSIDAD_ENTORNO = 0.5;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  escena.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  pmrem.dispose();
+
+  // ---------- Sala ----------
+  const materiales = new Map();
+  function material(color) {
+    if (!materiales.has(color)) materiales.set(color, new THREE.MeshLambertMaterial({ color }));
+    return materiales.get(color);
+  }
+  function caja(w, h, d, color, x, y, z) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material(color));
+    m.position.set(x, y, z);
+    escena.add(m);
+    return m;
+  }
+
+  const G = 0.2; // grosor de paredes, piso y techo
+  caja(ANCHO, G, FONDO, PISO, 0, -G / 2, 0);                                 // piso
+  const techo = caja(ANCHO, G, FONDO, TECHO, 0, ALTO + G / 2, 0);            // techo
+  // El techo solo recibe la luz de rebote; un leve brillo propio evita que se vea gris
+  techo.material = new THREE.MeshLambertMaterial({ color: TECHO, emissive: 0x48453f });
+  caja(ANCHO + 2 * G, ALTO, G, PARED, 0, ALTO / 2, -FONDO / 2 - G / 2);      // pared larga norte
+  caja(ANCHO + 2 * G, ALTO, G, PARED, 0, ALTO / 2, FONDO / 2 + G / 2);       // pared larga sur
+  caja(G, ALTO, FONDO, PARED, ANCHO / 2 + G / 2, ALTO / 2, 0);               // pared del fondo este (rótulo)
+  caja(G, ALTO, FONDO, PARED, -ANCHO / 2 - G / 2, ALTO / 2, 0);              // pared del fondo oeste
+
+  // Zócalo verde del club en las cuatro paredes (único acento de color de la sala)
+  function franja(y, h) {
+    const e = 0.04;
+    caja(ANCHO, h, e, VERDE, 0, y, -FONDO / 2 + e / 2);
+    caja(ANCHO, h, e, VERDE, 0, y, FONDO / 2 - e / 2);
+    caja(e, h, FONDO, VERDE, ANCHO / 2 - e / 2, y, 0);
+    caja(e, h, FONDO, VERDE, -ANCHO / 2 + e / 2, y, 0);
+  }
+  franja(0.075, 0.15);
+
+  // Paneles de luz empotrados en el techo, sobre cada fila de vitrinas: solo material emisivo,
+  // no son luces reales
+  const materialLuminaria = new THREE.MeshBasicMaterial({ color: 0xfff8ec });
+  const geoLuminaria = new THREE.BoxGeometry(1.2, 0.02, 0.45);
+  for (let x = -ANCHO / 2 + 2; x <= ANCHO / 2 - 2 + 0.01; x += SEPARACION) {
+    for (const z of [-FONDO / 2 + 1.4, FONDO / 2 - 1.4]) {
+      const panel = new THREE.Mesh(geoLuminaria, materialLuminaria);
+      panel.position.set(x, ALTO - 0.01, z);
+      escena.add(panel);
+    }
+  }
+
+  // ---------- Texturas de texto (canvas) ----------
+  function texturaTexto(texto, ancho, alto, { fondo, color, borde, tamano }) {
+    const canvas = document.createElement("canvas");
+    canvas.width = ancho;
+    canvas.height = alto;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = fondo;
+    ctx.fillRect(0, 0, ancho, alto);
+    if (borde) {
+      ctx.strokeStyle = borde;
+      ctx.lineWidth = alto * 0.04;
+      ctx.strokeRect(ctx.lineWidth, ctx.lineWidth, ancho - 2 * ctx.lineWidth, alto - 2 * ctx.lineWidth);
+    }
+    ctx.fillStyle = color;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    let px = tamano;
+    do {
+      ctx.font = `600 ${px}px -apple-system, system-ui, sans-serif`;
+      px -= 4;
+    } while (ctx.measureText(texto).width > ancho * 0.88 && px > 12);
+    ctx.fillText(texto, ancho / 2, alto / 2);
+    const textura = new THREE.CanvasTexture(canvas);
+    textura.colorSpace = THREE.SRGBColorSpace;
+    return textura;
+  }
+
+  // ---------- Rótulo de la sala (pared del fondo este) ----------
+  {
+    const rotulo = new THREE.Mesh(
+      new THREE.PlaneGeometry(4, 0.8),
+      new THREE.MeshBasicMaterial({
+        map: texturaTexto(TITULO_SALA, 1024, 205, { fondo: "#174a2c", color: "#f4f1ea", tamano: 96 })
+      })
+    );
+    rotulo.position.set(ANCHO / 2 - 0.03, 2.75, 0);
+    rotulo.rotation.y = -Math.PI / 2;
+    escena.add(rotulo);
+  }
+
+  // ---------- Escudo del club (opcional, pared del fondo este, bajo el rótulo) ----------
+  // Si `escudo` en piezas.js tiene una ruta, se muestra como logotipo grande, con su proporción
+  // y su transparencia. Con null no se pide nada y la pared queda lisa. No hay escudo de reemplazo.
+  const RUTA_ESCUDO = contenido.escudo ?? null;
+  if (RUTA_ESCUDO) {
+    const ALTO_MAX = 1.3, ANCHO_MAX = 1.6, CENTRO_Y = 1.5;
+    new THREE.TextureLoader().load(RUTA_ESCUDO, (textura) => {
+      textura.colorSpace = THREE.SRGBColorSpace;
+      const aspecto = textura.image.width / textura.image.height;
+      const alto = Math.min(ALTO_MAX, ANCHO_MAX / aspecto);
+      const escudo = new THREE.Mesh(
+        new THREE.PlaneGeometry(alto * aspecto, alto),
+        new THREE.MeshBasicMaterial({ map: textura, transparent: true })
+      );
+      escudo.position.set(ANCHO / 2 - 0.03, CENTRO_Y, 0);
+      escudo.rotation.y = -Math.PI / 2;
+      escena.add(escudo);
+    }, undefined, () => console.warn(`No se pudo cargar el escudo ${RUTA_ESCUDO}`)); // la pared queda lisa
+  }
+
+  // ---------- Vitrinas ----------
+  // Se reparten en dos filas paralelas a las paredes largas (norte y sur), centradas,
+  // a SEPARACION metros entre sí. La colisión usa RADIO_PEDESTAL; RADIO_VITRINA es solo visual.
+  function posicionesPedestales(n) {
+    const norte = Math.ceil(n / 2), sur = n - norte;
+    const fila = (k, z) =>
+      Array.from({ length: k }, (_, i) => ({ x: (i - (k - 1) / 2) * SEPARACION, z }));
+    return [...fila(norte, -FONDO / 2 + 1.4), ...fila(sur, FONDO / 2 - 1.4)];
+  }
+  const pedestales = posicionesPedestales(PIEZAS.length);
+
+  const geoBase = new THREE.CylinderGeometry(RADIO_VITRINA, RADIO_VITRINA, ALTO_PEDESTAL, 8);
+  const geoFilete = new THREE.CylinderGeometry(RADIO_VITRINA + 0.02, RADIO_VITRINA + 0.02, 0.04, 8);
+  const geoVidrio = new THREE.CylinderGeometry(RADIO_VITRINA * 0.96, RADIO_VITRINA * 0.96, ALTO_VIDRIO, 8);
+  // Vidrio claro, casi incoloro (antes tenía un tinte verde)
+  const materialVidrio = new THREE.MeshBasicMaterial({
+    color: 0xf4f8f8, transparent: true, opacity: 0.07, depthWrite: false, side: THREE.DoubleSide
+  });
+  for (const p of pedestales) {
+    const base = new THREE.Mesh(geoBase, material(BASE_VITRINA));
+    base.position.set(p.x, ALTO_PEDESTAL / 2, p.z);
+    const filete = new THREE.Mesh(geoFilete, material(FILETE));
+    filete.position.set(p.x, ALTO_PEDESTAL + 0.02, p.z);
+    const vidrio = new THREE.Mesh(geoVidrio, materialVidrio);
+    vidrio.position.set(p.x, ALTO_PEDESTAL + 0.04 + ALTO_VIDRIO / 2, p.z);
+    vidrio.renderOrder = 1; // se dibuja después de los modelos que contiene
+    escena.add(base, filete, vidrio);
+  }
+
+  // ---------- Paneles de fotos (paredes largas) ----------
+  // Entre 4 y 6 paneles según las entradas de `fotos` en piezas.js, alternando pared norte y sur
+  // y ubicados en los huecos entre vitrinas. Sin archivo (o sin entrada), muestran "[Foto pendiente]".
+  const MIN_FOTOS = 4, MAX_FOTOS = 6;
+  function ajustarCubrir(textura, aspectoPanel) {
+    const imagen = textura.image;
+    const aspectoImagen = imagen.width / imagen.height;
+    if (aspectoImagen > aspectoPanel) {
+      textura.repeat.set(aspectoPanel / aspectoImagen, 1);
+    } else {
+      textura.repeat.set(1, aspectoImagen / aspectoPanel);
+    }
+    textura.offset.set((1 - textura.repeat.x) / 2, (1 - textura.repeat.y) / 2);
+  }
+
+  // Posiciones x de `cantidad` paneles en una pared: en huecos entre vitrinas vecinas
+  // repartidos parejo; si no hay huecos suficientes, a lo largo de toda la pared.
+  function posicionesPaneles(cantidad, vitrinasX) {
+    const huecos = vitrinasX.slice(1).map((x, i) => (x + vitrinasX[i]) / 2);
+    if (huecos.length >= cantidad) {
+      const xs = Array.from({ length: cantidad }, (_, j) =>
+        huecos[Math.round((j + 0.5) * huecos.length / cantidad - 0.5)]);
+      return { xs, espacio: SEPARACION - 2 * RADIO_VITRINA };
+    }
+    const largoUtil = ANCHO - 3, paso = largoUtil / cantidad;
+    return { xs: Array.from({ length: cantidad }, (_, j) => -largoUtil / 2 + paso * (j + 0.5)), espacio: paso };
+  }
+
+  {
+    if (FOTOS.length > MAX_FOTOS) {
+      console.warn(`piezas.js tiene ${FOTOS.length} fotos; la sala muestra solo las primeras ${MAX_FOTOS}.`);
+    }
+    const cantidad = Math.min(MAX_FOTOS, Math.max(MIN_FOTOS, FOTOS.length));
+    const rutas = Array.from({ length: cantidad }, (_, i) => FOTOS[i] ?? null);
+    const norte = rutas.filter((_, i) => i % 2 === 0), sur = rutas.filter((_, i) => i % 2 === 1);
+    const cargadorFotos = new THREE.TextureLoader();
+    const pendiente = texturaTexto("[Foto pendiente]", 512, 340, { fondo: "#123d24", color: "#9fc9ad", tamano: 48 });
+
+    const colocar = (rutasPared, z, giro) => {
+      const vitrinasX = pedestales.filter((p) => Math.sign(p.z) === Math.sign(z)).map((p) => p.x);
+      const { xs, espacio } = posicionesPaneles(rutasPared.length, vitrinasX);
+      const anchoPanel = Math.min(2.4, espacio * 0.8), altoPanel = anchoPanel * 0.66;
+      rutasPared.forEach((ruta, i) => {
+        const x = xs[i];
+        const marco = caja(anchoPanel + 0.12, altoPanel + 0.12, 0.04, MARCO, x, 1.75, z);
+        marco.rotation.y = giro;
+        const imagen = new THREE.Mesh(new THREE.PlaneGeometry(anchoPanel, altoPanel), new THREE.MeshBasicMaterial({ map: pendiente }));
+        imagen.position.set(x, 1.75, z + (giro === 0 ? 0.025 : -0.025));
+        imagen.rotation.y = giro;
+        escena.add(imagen);
+        if (!ruta) return;
+        cargadorFotos.load(ruta, (textura) => {
+          textura.colorSpace = THREE.SRGBColorSpace;
+          ajustarCubrir(textura, anchoPanel / altoPanel);
+          imagen.material.map = textura;
+          imagen.material.needsUpdate = true;
+        }, undefined, () => {}); // sin foto: se queda el panel "[Foto pendiente]"
+      });
+    };
+
+    colocar(norte, -FONDO / 2 + 0.02, 0);
+    colocar(sur, FONDO / 2 - 0.02, Math.PI);
+  }
+
+  // ---------- Bancos ----------
+  // Obstáculos extra para la colisión del jugador (además de los pedestales).
+  const obstaculosCirculo = [];     // { x, z, r }
+  const obstaculosRectangulo = [];  // { x1, x2, z1, z2 }
+
+  const BANCO = { largo: 2, fondo: 0.45, alto: 0.45, z: 0.2 }; // en el pasillo central, frente a las vitrinas norte
+  const bancosX = [-3, 3];
+  for (const x of bancosX) {
+    caja(BANCO.largo - 0.2, BANCO.alto - 0.05, BANCO.fondo - 0.1, BANCO_BASE, x, (BANCO.alto - 0.05) / 2, BANCO.z);
+    caja(BANCO.largo, 0.05, BANCO.fondo, BANCO_ASIENTO, x, BANCO.alto - 0.025, BANCO.z);
+    obstaculosRectangulo.push({
+      x1: x - BANCO.largo / 2, x2: x + BANCO.largo / 2,
+      z1: BANCO.z - BANCO.fondo / 2, z2: BANCO.z + BANCO.fondo / 2
+    });
+  }
+
+  // ---------- Visitantes simulados ----------
+  // Figuras low-poly sin rostro. Geometrías y materiales compartidos, sin sombras ni esqueleto.
+  // Se construyen mirando hacia +z local; rotation.y las orienta.
+  const caminantes = [];
+  if (VISITANTES) {
+    const geoTorso = new THREE.CapsuleGeometry(0.18, 0.9, 3, 8);   // alto total 1.26 m
+    const geoCabeza = new THREE.IcosahedronGeometry(0.12, 1);
+    const geoMuslo = new THREE.BoxGeometry(0.32, 0.12, 0.42);
+    const geoCanilla = new THREE.BoxGeometry(0.3, 0.48, 0.12);
+    const ropa = [0x3b6ea5, 0xc75c3a, 0xd9b44a, 0x7a5aa6, 0x4f9a8a].map((c) => material(c));
+    const pieles = [0xd8c3ad, 0x8f6e55].map((c) => material(c));
+    const pantalon = material(0x2a2f33);
+
+    function crearFigura({ ropaI, pielI, escala = 1, sentado = false }) {
+      const figura = new THREE.Group();
+      const cuerpo = new THREE.Group(); // lo que se balancea al caminar
+      figura.add(cuerpo);
+      const torso = new THREE.Mesh(geoTorso, ropa[ropaI]);
+      const cabeza = new THREE.Mesh(geoCabeza, pieles[pielI]);
+      if (sentado) {
+        const asiento = BANCO.alto;
+        torso.scale.y = 0.6;
+        torso.position.set(0, asiento + 0.378, -0.08);
+        cabeza.position.set(0, asiento + 0.756 + 0.13, -0.06);
+        const muslo = new THREE.Mesh(geoMuslo, pantalon);
+        muslo.position.set(0, asiento + 0.07, 0.13);
+        const canilla = new THREE.Mesh(geoCanilla, pantalon);
+        canilla.position.set(0, 0.24, 0.3);
+        cuerpo.add(muslo, canilla);
+      } else {
+        torso.position.y = 0.63;
+        cabeza.position.set(0, 1.39, 0.02);
+      }
+      cuerpo.add(torso, cabeza);
+      figura.scale.setScalar(escala);
+      escena.add(figura);
+      return { figura, cuerpo };
+    }
+    const mirarHacia = (figura, x, z) => {
+      figura.rotation.y = Math.atan2(x - figura.position.x, z - figura.position.z);
+    };
+
+    // 2 quietos de pie, al costado de una vitrina (hacia la pared) mirándola: no tapan la vista desde el pasillo
+    const primera = pedestales[0], ultima = pedestales[pedestales.length - 1];
+    const dePie = [
+      { p: primera, dx: -0.95, ropaI: 0, pielI: 0, escala: 1.04 },
+      { p: ultima, dx: 0.95, ropaI: 1, pielI: 1, escala: 0.97 }
+    ];
+    for (const v of dePie) {
+      if (!v.p) continue;
+      const haciaPared = Math.sign(v.p.z) || -1;
+      const x = v.p.x + v.dx, z = v.p.z + haciaPared * 0.35;
+      const { figura } = crearFigura(v);
+      figura.position.set(x, 0, z);
+      mirarHacia(figura, v.p.x, v.p.z);
+      obstaculosCirculo.push({ x, z, r: 0.3 });
+    }
+
+    // 2 sentados, uno en cada banco, mirando hacia las vitrinas norte (-z)
+    const sentados = [
+      { x: bancosX[0] - 0.45, ropaI: 2, pielI: 1, escala: 1 },
+      { x: bancosX[1] + 0.4, ropaI: 3, pielI: 0, escala: 0.98 }
+    ];
+    for (const v of sentados) {
+      const { figura } = crearFigura({ ...v, sentado: true });
+      figura.position.set(v.x, 0, BANCO.z);
+      figura.rotation.y = Math.PI;
+      obstaculosCirculo.push({ x: v.x, z: BANCO.z - 0.1, r: 0.3 });
+    }
+
+    // 3 caminantes en carriles libres de vitrinas, bancos y quietos (ida y vuelta)
+    const rutas = [
+      // t: punto de partida a lo largo del primer tramo, para que no arranquen todos juntos
+      { puntos: [[-ANCHO / 2 + 2, -0.6], [ANCHO / 2 - 2, -0.6]], t: 0.4, ropaI: 4, pielI: 0, escala: 1.02 },
+      { puntos: [[ANCHO / 2 - 2, 0.85], [-ANCHO / 2 + 2, 0.85]], t: 0.2, ropaI: 0, pielI: 1, escala: 0.95 },
+      { puntos: [[-ANCHO / 2 + 1.5, FONDO / 2 - 0.45], [ANCHO / 2 - 1.5, FONDO / 2 - 0.45]], t: 0.6, ropaI: 3, pielI: 1, escala: 1.06 }
+    ];
+    rutas.forEach((r, i) => {
+      const { figura, cuerpo } = crearFigura(r);
+      const [[x0, z0], [x1, z1]] = r.puntos;
+      figura.position.set(x0 + (x1 - x0) * r.t, 0, z0 + (z1 - z0) * r.t);
+      caminantes.push({ figura, cuerpo, puntos: r.puntos, destino: 1, fase: i * 1.3 });
+    });
+  }
+
+  const VELOCIDAD_CAMINANTE = 0.5; // m/s
+  function actualizarVisitantes(dt) {
+    for (const c of caminantes) {
+      const f = c.figura;
+      // Se detienen si el jugador está a menos de 1 m
+      if (Math.hypot(jugador.x - f.position.x, jugador.z - f.position.z) < 1) {
+        c.cuerpo.position.y = 0;
+        c.cuerpo.rotation.z = 0;
+        continue;
+      }
+      const [tx, tz] = c.puntos[c.destino];
+      const dx = tx - f.position.x, dz = tz - f.position.z;
+      const d = Math.hypot(dx, dz);
+      const paso = VELOCIDAD_CAMINANTE * dt;
+      if (d <= paso) {
+        f.position.x = tx;
+        f.position.z = tz;
+        c.destino = (c.destino + 1) % c.puntos.length;
+      } else {
+        f.position.x += (dx / d) * paso;
+        f.position.z += (dz / d) * paso;
+        f.rotation.y = Math.atan2(dx, dz);
+      }
+      // Balanceo leve del paso
+      c.fase += dt * Math.PI * 2;
+      c.cuerpo.position.y = Math.abs(Math.sin(c.fase)) * 0.035;
+      c.cuerpo.rotation.z = Math.sin(c.fase) * 0.04;
+    }
+  }
+
+  // ---------- Modelos ----------
+  // Escala cada GLB a TAMANO_PIEZA en su mayor dimensión y lo apoya centrado sobre el pedestal.
+  function normalizar(objeto) {
+    const limites = new THREE.Box3().setFromObject(objeto);
+    const tamano = limites.getSize(new THREE.Vector3());
+    const mayor = Math.max(tamano.x, tamano.y, tamano.z);
+    if (mayor > 0 && Number.isFinite(mayor)) objeto.scale.multiplyScalar(TAMANO_PIEZA / mayor);
+    objeto.updateMatrixWorld(true);
+    limites.setFromObject(objeto);
+    const centro = limites.getCenter(new THREE.Vector3());
+    objeto.position.x -= centro.x;
+    objeto.position.z -= centro.z;
+    objeto.position.y -= limites.min.y;
+    const grupo = new THREE.Group();
+    grupo.add(objeto);
+    return grupo;
+  }
+
+  // Carga diferida: el .glb se descarga cuando el jugador está a menos de DISTANCIA_CARGA
+  // y se libera (dispose) a más de DISTANCIA_LIBERAR, con MAX_MODELOS como tope (los que
+  // están cargando también cuentan). Sin modelo cargado, la vitrina muestra
+  // un cilindro gris; si el archivo falla en sus tres intentos, además la etiqueta "Modelo pendiente".
+  // Una pieza sin `src` en piezas.js queda así desde el inicio, sin intentar descargar nada.
+  const geoSustituto = new THREE.CylinderGeometry(0.16, 0.16, 0.5, 16);
+  const materialSustituto = new THREE.MeshLambertMaterial({ color: 0x8a8f8c });
+  const texturaModeloPendiente = texturaTexto("Modelo pendiente", 512, 128, { fondo: "#1a2420", color: "#e6ece8", borde: "#1e7a3e", tamano: 64 });
+
+  const estados = PIEZAS.map((pieza, i) => {
+    const p = pedestales[i];
+    const sustituto = new THREE.Mesh(geoSustituto, materialSustituto);
+    sustituto.position.set(p.x, ALTO_PEDESTAL + 0.04 + 0.25, p.z);
+    const etiqueta = new THREE.Sprite(new THREE.SpriteMaterial({ map: texturaModeloPendiente }));
+    etiqueta.scale.set(0.72, 0.18, 1);
+    etiqueta.position.set(p.x, ALTO_PEDESTAL + 0.75, p.z);
+    etiqueta.visible = !pieza.src;
+    escena.add(sustituto, etiqueta);
+    // vacio | cargando | listo | error | pendiente (sin src: nunca se carga)
+    return { estado: pieza.src ? "vacio" : "pendiente", modelo: null, sustituto, etiqueta };
+  });
+  const sinModelo = (i) => estados[i].estado === "error" || estados[i].estado === "pendiente";
+
+  const distanciaA = (i) => Math.hypot(jugador.x - pedestales[i].x, jugador.z - pedestales[i].z);
+
+  const avisadosPeso = new Set();
+  function revisarPeso(src, bytes) {
+    if (bytes > LIMITE_PESO && !avisadosPeso.has(src)) {
+      avisadosPeso.add(src);
+      console.warn(`${src} pesa ${(bytes / 1048576).toFixed(1)} MB (más de 5 MB): conviene comprimirlo.`);
+    }
+  }
+  // Revisión de peso al abrir la sala, sin descargar los modelos (solo encabezados)
+  for (const src of new Set(PIEZAS.flatMap((p) => [p.src, p.srcDetalle]).filter(Boolean))) {
+    fetch(src, { method: "HEAD" })
+      .then((r) => { if (r.ok) revisarPeso(src, Number(r.headers.get("content-length")) || 0); })
+      .catch(() => {});
+  }
+
+  // Los .glb pueden venir comprimidos con Draco (p. ej. modelos/copa-base.glb)
+  const cargador = new GLTFLoader().setDRACOLoader(
+    new DRACOLoader().setDecoderPath("https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/gltf/")
+  );
+
+  // Caché por src: un mismo .glb se descarga una sola vez y cada vitrina que lo usa muestra un
+  // clon (comparten geometría, materiales y texturas). El tope MAX_MODELOS cuenta modelos
+  // distintos que están cargando o cargados, no vitrinas. La plantilla se libera cuando ninguna
+  // vitrina la usa.
+  // Si una descarga falla, la entrada pasa a "fallo" (no ocupa cupo) y se reintenta cuando el
+  // jugador está cerca de alguna vitrina con ese modelo, con al menos ESPERA_REINTENTO entre
+  // intentos. Tras MAX_INTENTOS fallos pasa a "error" y sus vitrinas quedan en "Modelo pendiente".
+  const MAX_INTENTOS = 3, ESPERA_REINTENTO = 5000; // ms
+  // src -> { estado: "cargando" | "listo" | "fallo" | "error", plantilla, usuarios: Set,
+  //          intentos, reintentarDesde }
+  const cache = new Map();
+  const ocupaCupo = (c) => c.estado === "cargando" || c.estado === "listo";
+  const compartenSrc = (src) => src ? PIEZAS.filter((p) => p.src === src).length : 0;
+  const altoOriginal = new Map(); // src -> alto del .glb en metros, para la escala real en RA
+
+  const nombreVitrina = (k) => `vitrina ${k + 1} «${PIEZAS[k].titulo}»`;
+  function razonFallo(error) {
+    if (error instanceof Error) return `${error.name}: ${error.message}`;
+    if (error?.type) return `evento "${error.type}"${error.target?.status ? ` (HTTP ${error.target.status})` : ""}`;
+    return String(error);
+  }
+  function marcarError(i) {
+    const e = estados[i];
+    e.estado = "error"; // sin más intentos: la vitrina queda con "Modelo pendiente"
+    e.sustituto.visible = true;
+    e.etiqueta.visible = true;
+  }
+  function volverAVacio(i) { // fallo temporal: cilindro gris sin etiqueta, a la espera del reintento
+    const e = estados[i];
+    e.estado = "vacio";
+    e.sustituto.visible = true;
+    e.etiqueta.visible = false;
+  }
+  function colocarClon(i) {
+    const e = estados[i], p = pedestales[i];
+    e.modelo = cache.get(PIEZAS[i].src).plantilla.clone();
+    e.modelo.position.set(p.x, ALTO_PEDESTAL + 0.04, p.z);
+    escena.add(e.modelo);
+    e.estado = "listo";
+    e.sustituto.visible = false;
+    if (distanciaA(i) > DISTANCIA_LIBERAR) liberarModelo(i); // se alejó mientras cargaba
+  }
+  function cargarModelo(i) {
+    const e = estados[i], src = PIEZAS[i].src;
+    let entrada = cache.get(src);
+    if (entrada?.estado === "error") {
+      marcarError(i);
+      console.warn(`No se pudo cargar ${src} para la ${nombreVitrina(i)}: falló en sus ${MAX_INTENTOS} intentos. Queda en "Modelo pendiente".`);
+      return;
+    }
+    e.estado = "cargando";
+    if (entrada && ocupaCupo(entrada)) {
+      entrada.usuarios.add(i);
+      if (entrada.estado === "listo") colocarClon(i); // ya descargado: solo se clona
+      return;                                          // si está cargando, se clona al terminar
+    }
+    // Primera descarga o reintento tras un fallo (nunca dos descargas del mismo archivo a la vez)
+    entrada = { estado: "cargando", plantilla: null, usuarios: new Set([i]), intentos: (entrada?.intentos ?? 0) + 1 };
+    cache.set(src, entrada);
+    const fallo = (error) => {
+      const usuarios = [...entrada.usuarios];
+      entrada.usuarios.clear();
+      entrada.plantilla = null;
+      const definitivo = entrada.intentos >= MAX_INTENTOS;
+      entrada.estado = definitivo ? "error" : "fallo";
+      entrada.reintentarDesde = performance.now() + ESPERA_REINTENTO;
+      for (const k of usuarios) definitivo ? marcarError(k) : volverAVacio(k);
+      console.warn(`No se pudo cargar ${src} (intento ${entrada.intentos} de ${MAX_INTENTOS}) para la ` +
+        `${usuarios.map(nombreVitrina).join(", ")}. Razón: ${razonFallo(error)}. ` +
+        (definitivo ? `Sin más intentos: queda en "Modelo pendiente".`
+                    : `Se reintentará al estar cerca, en ${ESPERA_REINTENTO / 1000} s o más.`));
+    };
+    cargador.load(
+      src,
+      (gltf) => {
+        try {
+          altoOriginal.set(src, new THREE.Box3().setFromObject(gltf.scene).getSize(new THREE.Vector3()).y);
+          gltf.scene.traverse((o) => {
+            for (const m of [].concat(o.material ?? [])) if ("envMapIntensity" in m) m.envMapIntensity = INTENSIDAD_ENTORNO;
+          });
+          entrada.plantilla = normalizar(gltf.scene);
+        } catch (error) {
+          fallo(error);
+          return;
+        }
+        entrada.estado = "listo";
+        for (const k of [...entrada.usuarios]) colocarClon(k);
+      },
+      (ev) => { if (ev.lengthComputable) revisarPeso(src, ev.total); },
+      fallo
+    );
+  }
+  function liberarPlantilla(src) {
+    const entrada = cache.get(src);
+    entrada.plantilla.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (!o.material) return;
+      for (const m of [].concat(o.material)) {
+        for (const valor of Object.values(m)) {
+          if (valor && valor.isTexture) {
+            valor.source?.data?.close?.(); // ImageBitmap del GLTFLoader
+            valor.dispose();
+          }
+        }
+        m.dispose();
+      }
+    });
+    cache.delete(src);
+  }
+  function liberarModelo(i) {
+    const e = estados[i], src = PIEZAS[i].src;
+    escena.remove(e.modelo);
+    e.modelo = null;
+    e.estado = "vacio";
+    e.sustituto.visible = true;
+    const entrada = cache.get(src);
+    entrada.usuarios.delete(i);
+    if (entrada.usuarios.size === 0) liberarPlantilla(src); // ninguna vitrina lo muestra
+  }
+  function actualizarCargas() {
+    const d = estados.map((_, i) => distanciaA(i));
+    estados.forEach((e, i) => { if (e.estado === "listo" && d[i] > DISTANCIA_LIBERAR) liberarModelo(i); });
+
+    // Pendientes de cargar, de la más cercana a la más lejana
+    const pendientes = estados.map((_, i) => i)
+      .filter((i) => estados[i].estado === "vacio" && d[i] < DISTANCIA_CARGA)
+      .sort((a, b) => d[a] - d[b]);
+    const ahora = performance.now();
+    for (const i of pendientes) {
+      const src = PIEZAS[i].src;
+      const entrada = cache.get(src);
+      // Tras un fallo, esperar ESPERA_REINTENTO antes de volver a intentarlo
+      if (entrada?.estado === "fallo" && ahora < entrada.reintentarDesde) continue;
+      // Un modelo ya descargado, descargándose o sin más intentos no ocupa un cupo nuevo;
+      // una primera descarga o un reintento sí
+      if (!entrada || entrada.estado === "fallo") {
+        const ocupados = [...cache.values()].filter(ocupaCupo).length;
+        if (ocupados >= MAX_MODELOS) {
+          // Tope alcanzado: liberar el modelo cargado más lejano (la distancia de un modelo es la
+          // de su vitrina más cercana), solo si está más lejos que la nueva; si no, se liberaría
+          // una pieza más cercana y se cargaría una y otra vez
+          let lejano = null, dLejano = -1;
+          for (const [s, c] of cache) {
+            if (c.estado !== "listo") continue;
+            const dMin = Math.min(...[...c.usuarios].map((k) => d[k]));
+            if (dMin > dLejano) { lejano = s; dLejano = dMin; }
+          }
+          if (lejano === null || dLejano <= d[i]) break;
+          for (const k of [...cache.get(lejano).usuarios]) liberarModelo(k);
+        }
+      }
+      cargarModelo(i);
+    }
+  }
+
+  // ---------- Jugador y controles ----------
+  const jugador = { x: INICIO.x, z: INICIO.z };
+  let yaw = INICIO.yaw, pitch = 0;
+  let abierto = null; // null | "panel" | "ra" | "final"
+  let piezaAbierta = null, cercana = null, recienCompletado = false;
+  let iniciado = false; // pasa a true con el botón "Iniciar recorrido" de la bienvenida
+
+  function girar(dx, dy, sensibilidad) {
+    yaw -= dx * sensibilidad;
+    pitch = Math.max(-1.4, Math.min(1.4, pitch - dy * sensibilidad));
+  }
+
+  // Teclado
+  const teclas = new Set();
+  addEventListener("keydown", (e) => {
+    if (e.code === "KeyE" && !e.repeat && iniciado && abierto === null && cercana !== null) abrirPanel(cercana);
+    if (e.code === "Escape") {
+      if (abierto === "ra") cerrarRA();
+      else if (abierto === "panel") cerrarPanel();
+    }
+    teclas.add(e.code);
+  });
+  addEventListener("keyup", (e) => teclas.delete(e.code));
+  addEventListener("blur", () => teclas.clear());
+
+  // Mouse con pointer lock (escritorio)
+  function bloquearMouse() {
+    if (esTactil) return;
+    try {
+      const r = lienzo.requestPointerLock();
+      if (r && r.catch) r.catch(() => {});
+    } catch (e) {}
+  }
+  function actualizarInicio() {
+    const mostrar = iniciado && !esTactil && abierto === null && document.pointerLockElement !== lienzo;
+    inicio.classList.toggle("visible", mostrar);
+  }
+  inicio.addEventListener("click", bloquearMouse);
+  document.addEventListener("pointerlockchange", actualizarInicio);
+  document.addEventListener("pointerlockerror", actualizarInicio); // si el navegador niega el bloqueo
+
+  // Botón "Iniciar recorrido": cierra la bienvenida y activa el control en primera persona
+  // (bloqueo del puntero en escritorio; en celular el joystick y arrastrar para mirar).
+  // Otras partes de la sala (p. ej. la música) se suman a `alIniciar`; corren dentro del clic,
+  // que es cuando el navegador permite bloquear el puntero y reproducir audio.
+  const alIniciar = [];
+  function iniciar() {
+    if (iniciado) return;
+    iniciado = true;
+    $("bienvenida").hidden = true;
+    document.body.classList.add("recorriendo");
+    bloquearMouse(); // en táctil no hace nada; en escritorio, pointerlockchange cierra la capa
+    for (const f of alIniciar) f();
+    if (esTactil) actualizarInicio();
+  }
+  $("btnIniciar").addEventListener("click", iniciar);
+
+  // ---------- Música de fondo (opcional) ----------
+  // Si `musica` en piezas.js tiene una ruta, suena en bucle y a volumen bajo desde "Iniciar
+  // recorrido" (los navegadores solo dejan reproducir audio tras un clic). El botón de arriba a la
+  // derecha (o la tecla M) la silencia o la activa, y la preferencia se recuerda en este navegador.
+  // Con null no se pide nada y no hay botón ni música.
+  const RUTA_MUSICA = contenido.musica ?? null, VOLUMEN_MUSICA = 0.25;
+  const LIMITE_MUSICA = 3 * 1024 * 1024, CLAVE_MUSICA = "museoCali_musica"; // "si" | "no"
+  const btnMusica = $("btnMusica");
+  let musica = null; // elemento Audio, solo si el archivo existe
+  let musicaActiva = true;
+  try { musicaActiva = localStorage.getItem(CLAVE_MUSICA) !== "no"; } catch (e) {}
+  function guardarMusica() {
+    try { localStorage.setItem(CLAVE_MUSICA, musicaActiva ? "si" : "no"); } catch (e) {}
+  }
+  function pintarBotonMusica() {
+    btnMusica.textContent = musicaActiva ? "🔊 Música" : "🔇 Música";
+    btnMusica.title = musicaActiva ? "Silenciar la música (M)" : "Activar la música (M)";
+    btnMusica.setAttribute("aria-pressed", String(musicaActiva));
+  }
+  function sonar() {
+    if (musica && musicaActiva && iniciado && !document.hidden) musica.play().catch(() => {});
+  }
+  function alternarMusica() {
+    if (!musica) return;
+    musicaActiva = !musicaActiva;
+    guardarMusica();
+    pintarBotonMusica();
+    if (musicaActiva) sonar(); else musica.pause();
+  }
+  if (RUTA_MUSICA) fetch(RUTA_MUSICA, { method: "HEAD" }).then((r) => {
+    if (!r.ok) { console.warn(`No se encontró la música ${RUTA_MUSICA}`); return; }
+    const bytes = Number(r.headers.get("content-length")) || 0;
+    if (bytes > LIMITE_MUSICA) {
+      console.warn(`${RUTA_MUSICA} pesa ${(bytes / 1048576).toFixed(1)} MB (más de 3 MB): conviene comprimirlo.`);
+    }
+    musica = new Audio(RUTA_MUSICA);
+    musica.loop = true;
+    musica.volume = VOLUMEN_MUSICA;
+    musica.preload = "none"; // no se descarga hasta que suena
+    musica.addEventListener("error", () => { musica = null; btnMusica.hidden = true; }); // archivo dañado
+    pintarBotonMusica();
+    btnMusica.hidden = false;
+    sonar(); // por si el recorrido ya empezó cuando terminó esta revisión
+  }).catch(() => {});
+  alIniciar.push(sonar);
+  btnMusica.addEventListener("click", alternarMusica);
+  addEventListener("keydown", (e) => { if (e.code === "KeyM" && !e.repeat && iniciado) alternarMusica(); });
+  // Pausa con la pestaña oculta (p. ej. el celular en otra app) y sigue al volver
+  document.addEventListener("visibilitychange", () => { if (document.hidden) musica?.pause(); else sonar(); });
+  document.addEventListener("mousemove", (e) => {
+    if (document.pointerLockElement === lienzo) girar(e.movementX, e.movementY, SENSIBILIDAD_MOUSE);
+  });
+
+  // Arrastrar con un dedo para mirar (táctil)
+  let toqueMirar = null;
+  lienzo.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" || toqueMirar) return;
+    toqueMirar = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    lienzo.setPointerCapture(e.pointerId);
+  });
+  lienzo.addEventListener("pointermove", (e) => {
+    if (!toqueMirar || e.pointerId !== toqueMirar.id) return;
+    if (iniciado && abierto === null) girar(e.clientX - toqueMirar.x, e.clientY - toqueMirar.y, SENSIBILIDAD_TACTIL);
+    toqueMirar.x = e.clientX;
+    toqueMirar.y = e.clientY;
+  });
+  const soltarMirar = (e) => { if (toqueMirar && e.pointerId === toqueMirar.id) toqueMirar = null; };
+  lienzo.addEventListener("pointerup", soltarMirar);
+  lienzo.addEventListener("pointercancel", soltarMirar);
+
+  // Joystick virtual (táctil)
+  const joy = { id: null, x: 0, y: 0 };
+  function moverJoy(e) {
+    const r = joystick.getBoundingClientRect();
+    const max = r.width / 2 - 14;
+    let dx = e.clientX - (r.left + r.width / 2);
+    let dy = e.clientY - (r.top + r.height / 2);
+    const d = Math.hypot(dx, dy);
+    if (d > max) { dx *= max / d; dy *= max / d; }
+    perilla.style.transform = `translate(${dx}px, ${dy}px)`;
+    joy.x = dx / max;
+    joy.y = dy / max;
+  }
+  function soltarJoy() {
+    joy.id = null; joy.x = 0; joy.y = 0;
+    perilla.style.transform = "";
+  }
+  joystick.addEventListener("pointerdown", (e) => {
+    joy.id = e.pointerId;
+    joystick.setPointerCapture(e.pointerId);
+    moverJoy(e);
+  });
+  joystick.addEventListener("pointermove", (e) => { if (e.pointerId === joy.id) moverJoy(e); });
+  joystick.addEventListener("pointerup", (e) => { if (e.pointerId === joy.id) soltarJoy(); });
+  joystick.addEventListener("pointercancel", (e) => { if (e.pointerId === joy.id) soltarJoy(); });
+  joystick.classList.toggle("visible", esTactil);
+
+  // ---------- Movimiento y colisión ----------
+  function mover(dt) {
+    let adelante = 0, lado = 0;
+    if (teclas.has("KeyW") || teclas.has("ArrowUp")) adelante += 1;
+    if (teclas.has("KeyS") || teclas.has("ArrowDown")) adelante -= 1;
+    if (teclas.has("KeyD") || teclas.has("ArrowRight")) lado += 1;
+    if (teclas.has("KeyA") || teclas.has("ArrowLeft")) lado -= 1;
+    adelante -= joy.y;
+    lado += joy.x;
+
+    const largo = Math.hypot(adelante, lado);
+    if (largo === 0) return;
+    if (largo > 1) { adelante /= largo; lado /= largo; }
+
+    const sin = Math.sin(yaw), cos = Math.cos(yaw);
+    jugador.x += (-sin * adelante + cos * lado) * VELOCIDAD * dt;
+    jugador.z += (-cos * adelante - sin * lado) * VELOCIDAD * dt;
+    colisionar();
+  }
+
+  function colisionar() {
+    const minimo = RADIO_PEDESTAL + RADIO_JUGADOR;
+    for (const p of pedestales) {
+      const dx = jugador.x - p.x, dz = jugador.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d >= minimo) continue;
+      if (d === 0) { jugador.x = p.x + minimo; continue; }
+      jugador.x = p.x + (dx / d) * minimo;
+      jugador.z = p.z + (dz / d) * minimo;
+    }
+    // Visitantes quietos (círculos)
+    for (const c of obstaculosCirculo) {
+      const dx = jugador.x - c.x, dz = jugador.z - c.z;
+      const d = Math.hypot(dx, dz), min = c.r + RADIO_JUGADOR;
+      if (d >= min) continue;
+      if (d === 0) { jugador.x = c.x + min; continue; }
+      jugador.x = c.x + (dx / d) * min;
+      jugador.z = c.z + (dz / d) * min;
+    }
+    // Bancos (rectángulos): empujar desde el punto más cercano del rectángulo
+    for (const r of obstaculosRectangulo) {
+      const cx = Math.max(r.x1, Math.min(r.x2, jugador.x));
+      const cz = Math.max(r.z1, Math.min(r.z2, jugador.z));
+      const dx = jugador.x - cx, dz = jugador.z - cz;
+      const d = Math.hypot(dx, dz);
+      if (d >= RADIO_JUGADOR) continue;
+      if (d === 0) { // centro dentro del banco: salir por el borde más cercano
+        const salidas = [
+          [jugador.x - r.x1, -1, 0], [r.x2 - jugador.x, 1, 0],
+          [jugador.z - r.z1, 0, -1], [r.z2 - jugador.z, 0, 1]
+        ].sort((a, b) => a[0] - b[0]);
+        const [dist, sx, sz] = salidas[0];
+        jugador.x += sx * (dist + RADIO_JUGADOR);
+        jugador.z += sz * (dist + RADIO_JUGADOR);
+        continue;
+      }
+      jugador.x = cx + (dx / d) * RADIO_JUGADOR;
+      jugador.z = cz + (dz / d) * RADIO_JUGADOR;
+    }
+    const limX = ANCHO / 2 - RADIO_JUGADOR, limZ = FONDO / 2 - RADIO_JUGADOR;
+    jugador.x = Math.max(-limX, Math.min(limX, jugador.x));
+    jugador.z = Math.max(-limZ, Math.min(limZ, jugador.z));
+  }
+
+  function actualizarCercania() {
+    cercana = null;
+    let mejor = DISTANCIA_INTERACCION;
+    pedestales.forEach((p, i) => {
+      const d = Math.hypot(jugador.x - p.x, jugador.z - p.z);
+      if (d < mejor) { mejor = d; cercana = i; }
+    });
+    avisoAccion.classList.toggle("visible", cercana !== null && abierto === null);
+  }
+
+  // ---------- Panel, RA y final ----------
+  function abrirPanel(i) {
+    abierto = "panel";
+    piezaAbierta = i;
+    teclas.clear();
+    soltarJoy();
+    if (document.pointerLockElement) document.exitPointerLock();
+
+    $("tituloPieza").textContent = PIEZAS[i].titulo;
+    $("textoPieza").textContent = PIEZAS[i].texto;
+    btnRA.disabled = sinModelo(i);
+    btnRA.textContent = sinModelo(i) ? "Modelo pendiente" : "Ver en RA / rotar";
+    capaPanel.classList.add("visible");
+    avisoAccion.classList.remove("visible");
+
+    const antes = visitadas.size;
+    visitadas.add(i);
+    guardarProgreso();
+    actualizarHUD();
+    if (antes < PIEZAS.length && visitadas.size === PIEZAS.length) recienCompletado = true;
+    actualizarInicio();
+  }
+
+  function cerrarPanel() {
+    capaPanel.classList.remove("visible");
+    abierto = null;
+    if (recienCompletado) {
+      recienCompletado = false;
+      abierto = "final";
+      pantallaFinal.classList.add("activo");
+    } else {
+      bloquearMouse();
+    }
+    actualizarInicio();
+  }
+
+  function abrirRA() {
+    if (sinModelo(piezaAbierta)) return;
+    const pieza = PIEZAS[piezaAbierta];
+    // Si la pieza tiene `altura` (metros) en piezas.js, la RA la muestra a ese tamaño real.
+    // La escala se fija antes del src: cambiarla con el modelo ya cargado falla en model-viewer 4.4.
+    // La versión de detalle (`srcDetalle`) mide lo mismo que la de la sala, así que vale la misma escala.
+    const alto = altoOriginal.get(pieza.src);
+    const f = pieza.altura > 0 && alto > 0 ? Math.round((pieza.altura / alto) * 1000) / 1000 : 1;
+    visor.scale = `${f} ${f} ${f}`;
+    // El visor carga la versión de detalle solo al abrirlo; la sala 3D (caché y tope) usa `src`
+    visor.src = pieza.srcDetalle ?? pieza.src;
+    visor.alt = pieza.titulo;
+    capaRA.classList.add("visible");
+    abierto = "ra";
+  }
+
+  // Si la versión de detalle falla, el visor vuelve a la versión de la sala
+  visor.addEventListener("error", (e) => {
+    const pieza = PIEZAS[piezaAbierta];
+    if (!pieza?.srcDetalle || visor.src !== pieza.srcDetalle) return;
+    console.warn(`No se pudo cargar ${pieza.srcDetalle}; se usa ${pieza.src}`, e.detail);
+    visor.src = pieza.src;
+  });
+
+  function cerrarRA() {
+    capaRA.classList.remove("visible");
+    abierto = "panel";
+  }
+
+  avisoAccion.addEventListener("click", () => { if (abierto === null && cercana !== null) abrirPanel(cercana); });
+  $("btnCerrarPanel").addEventListener("click", cerrarPanel);
+  btnRA.addEventListener("click", abrirRA);
+  $("btnCerrarRA").addEventListener("click", cerrarRA);
+
+  $("btnReiniciar").addEventListener("click", () => {
+    visitadas = new Set();
+    guardarProgreso();
+    actualizarHUD();
+    jugador.x = INICIO.x; jugador.z = INICIO.z;
+    yaw = INICIO.yaw; pitch = 0;
+    pantallaFinal.classList.remove("activo");
+    abierto = null;
+    actualizarInicio();
+  });
+
+  // Acceso de solo diagnóstico para pruebas automatizadas y la consola del navegador
+  window.museo = {
+    jugador,
+    largoSala: ANCHO,
+    carga: { max: MAX_MODELOS, cargar: DISTANCIA_CARGA, liberar: DISTANCIA_LIBERAR },
+    pedestales,
+    // Una fila por vitrina: estado, src y cuántas vitrinas comparten ese src (úsese con console.table)
+    estadoModelos: () => estados.map((e, i) => ({ estado: e.estado, src: PIEZAS[i].src, comparten: compartenSrc(PIEZAS[i].src) })),
+    // Modelos descargados ahora mismo (cada uno cuenta una sola vez contra el tope)
+    modelosEnMemoria: () => [...cache].map(([src, c]) => ({ src, estado: c.estado, intentos: c.intentos, vitrinas: [...c.usuarios].map((k) => k + 1) })),
+    girar: (nuevoYaw) => { yaw = nuevoYaw; pitch = 0; },
+    iniciado: () => iniciado,
+    musica: () => ({ archivo: !!musica, activa: musicaActiva, sonando: !!musica && !musica.paused, volumen: musica?.volume ?? null })
+  };
+
+  // ---------- Bucle ----------
+  const reloj = new THREE.Clock();
+  actualizarInicio();
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(reloj.getDelta(), 0.1);
+    // Con el modal de RA o la pantalla final encima no hace falta dibujar la sala
+    if (abierto === "ra" || abierto === "final") return;
+    if (abierto === null && iniciado) mover(dt);
+    actualizarVisitantes(dt);
+    actualizarCargas();
+    camara.position.set(jugador.x, ALTURA_OJOS, jugador.z);
+    camara.rotation.set(pitch, yaw, 0);
+    actualizarCercania();
+    renderer.render(escena, camara);
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Museo Virtual — Deportivo Cali (Recorrido)</title>
+<script type="module" src="https://unpkg.com/@google/model-viewer@4.4.0/dist/model-viewer.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #0d1b2a;
+    color: #f1f1f1;
+    min-height: 100vh;
+  }
+  header {
+    padding: 16px 20px;
+    border-bottom: 2px solid #1e7a3e;
+  }
+  header h1 { margin: 0; font-size: 1.05rem; }
+  header p { margin: 4px 0 0; font-size: 0.78rem; color: #a8b3bd; }
+
+  .aviso {
+    margin: 0;
+    padding: 10px 20px;
+    background: #3a2a0d;
+    color: #f0c674;
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+
+  /* Barra de progreso del recorrido */
+  .progreso-wrap {
+    padding: 14px 20px 6px;
+  }
+  .progreso-track {
+    height: 6px;
+    background: #14263b;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progreso-fill {
+    height: 100%;
+    background: #1e7a3e;
+    width: 0%;
+    transition: width 0.3s ease;
+  }
+  .progreso-label {
+    font-size: 0.75rem;
+    color: #a8b3bd;
+    margin-top: 6px;
+  }
+
+  /* Vista de sala individual */
+  #sala {
+    display: block;
+  }
+  .visor-wrap { position: relative; }
+  model-viewer {
+    width: 100%;
+    height: 58vh;
+    background: #14263b;
+  }
+  /* Si el .glb falta o falla: cilindro gris con "Modelo pendiente" */
+  #pendiente {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: #14263b;
+    color: #e6ece8;
+    font-size: 0.95rem;
+  }
+  #pendiente.visible { display: flex; }
+  #pendiente .cilindro {
+    width: 70px;
+    height: 120px;
+    border-radius: 35px / 12px;
+    background: linear-gradient(90deg, #6f7471, #a3a8a5 45%, #6f7471);
+  }
+  .ficha { padding: 16px 20px; }
+  .ficha h2 { margin: 0 0 6px; font-size: 1rem; }
+  .ficha p { margin: 0; font-size: 0.9rem; line-height: 1.4; color: #cfd8e0; }
+
+  .nav-botones {
+    display: flex;
+    justify-content: space-between;
+    padding: 16px 20px 28px;
+    gap: 12px;
+  }
+  .nav-botones button {
+    flex: 1;
+    background: #1e7a3e;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+  .nav-botones button:disabled {
+    background: #2a3a4a;
+    color: #6a7a8a;
+    cursor: not-allowed;
+  }
+
+  /* Pantalla de recompensa al completar */
+  #final {
+    display: none;
+    text-align: center;
+    padding: 60px 24px;
+  }
+  #final.activo { display: block; }
+  #final h2 { font-size: 1.3rem; margin-bottom: 8px; }
+  #final p { color: #cfd8e0; font-size: 0.95rem; line-height: 1.5; }
+  #final .codigo { font-family: ui-monospace, monospace; letter-spacing: 0.08em; color: #f1f1f1; }
+  .insignia {
+    font-size: 3rem;
+    margin: 16px 0;
+  }
+  #final button {
+    margin-top: 20px;
+    background: transparent;
+    border: 1px solid #1e7a3e;
+    color: #1e7a3e;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<!--
+  Este archivo construye el MOTOR del recorrido (navegación, progreso, recompensa).
+  Las piezas (array PIEZAS en piezas.js) tienen los títulos y textos reales de las
+  fichas del museo. Los modelos de modelos/ son
+  reconstrucciones aproximadas y provisionales; la pieza 14 aún no tiene modelo
+  (src: null) y muestra "Modelo pendiente".
+
+  Versión de respaldo: index.html (sala 3D) redirige aquí si no hay WebGL.
+
+  Para cambiar el contenido se edita solo piezas.js. El motor de navegación y
+  progreso NO necesita tocarse.
+
+  La pantalla final es una demostración: el código que muestra es un ejemplo,
+  rotulado como tal, y no corresponde a ningún beneficio real.
+-->
+
+<header>
+  <h1>⚽ Museo Virtual Deportivo Cali — Recorrido</h1>
+  <p>Títulos de liga y finales del Deportivo Cali, una pieza a la vez</p>
+</header>
+
+<p class="aviso">
+  ⚠️ Los textos de cada pieza son reales. Los modelos 3D son reconstrucciones aproximadas y
+  provisionales, no escaneos de las copas originales.
+</p>
+
+<div id="sala">
+  <div class="progreso-wrap">
+    <div class="progreso-track"><div class="progreso-fill" id="progresoFill"></div></div>
+    <div class="progreso-label" id="progresoLabel"></div>
+  </div>
+
+  <div class="visor-wrap">
+    <model-viewer id="visor"
+      ar
+      ar-modes="scene-viewer quick-look webxr"
+      camera-controls
+      auto-rotate
+      shadow-intensity="1"
+      environment-image="neutral"
+      exposure="1">
+    </model-viewer>
+    <div id="pendiente"><div class="cilindro"></div>Modelo pendiente</div>
+  </div>
+
+  <div class="ficha">
+    <h2 id="tituloPieza"></h2>
+    <p id="textoPieza"></p>
+  </div>
+
+  <div class="nav-botones">
+    <button id="btnAnterior">← Anterior</button>
+    <button id="btnSiguiente">Siguiente →</button>
+  </div>
+</div>
+
+<div id="final">
+  <div class="insignia">🏆</div>
+  <h2>¡Recorrido completo!</h2>
+  <p>Gracias por completar el recorrido. En un museo oficial recibirías aquí un código de
+     descuento para la tienda del club.</p>
+  <p><em>(Demostración: este beneficio es un ejemplo y no está activo.)</em></p>
+  <p>Código de ejemplo: <strong class="codigo">DEMO-MUSEO</strong></p>
+  <button id="btnReiniciar">Volver a empezar</button>
+</div>
+
+<script type="module">
+  // El contenido (array PIEZAS) vive en piezas.js, compartido con la sala 3D.
+  import { PIEZAS } from "./piezas.js";
+
+  const CLAVE_PROGRESO = "museoCali_progreso";
+  let indice = 0;
+  let visitadas;
+  try {
+    visitadas = new Set(JSON.parse(localStorage.getItem(CLAVE_PROGRESO) || "[]")
+      .filter((i) => Number.isInteger(i) && i >= 0 && i < PIEZAS.length));
+  } catch (e) {
+    visitadas = new Set(); // localStorage bloqueado o dato corrupto: empezar de cero
+  }
+
+  const visor = document.getElementById("visor");
+  const tituloPieza = document.getElementById("tituloPieza");
+  const textoPieza = document.getElementById("textoPieza");
+  const progresoFill = document.getElementById("progresoFill");
+  const progresoLabel = document.getElementById("progresoLabel");
+  const btnAnterior = document.getElementById("btnAnterior");
+  const btnSiguiente = document.getElementById("btnSiguiente");
+  const sala = document.getElementById("sala");
+  const final = document.getElementById("final");
+
+  function guardarProgreso() {
+    try {
+      localStorage.setItem(CLAVE_PROGRESO, JSON.stringify([...visitadas]));
+    } catch (e) {
+      // localStorage puede fallar (modo privado, etc.) — el recorrido sigue funcionando igual
+    }
+  }
+
+  // Un .glb que falta o falla no detiene el recorrido: se muestra "Modelo pendiente"
+  const pendiente = document.getElementById("pendiente");
+  // Si la versión de detalle (`srcDetalle`) falla, se intenta la versión normal (`src`)
+  visor.addEventListener("error", (e) => {
+    const pieza = PIEZAS[indice];
+    if (pieza.srcDetalle && visor.src === pieza.srcDetalle) {
+      console.warn(`No se pudo cargar ${pieza.srcDetalle}; se usa ${pieza.src}`, e.detail);
+      visor.src = pieza.src;
+      return;
+    }
+    if (visor.src !== pieza.src) return;
+    pendiente.classList.add("visible");
+    console.warn(`No se pudo cargar ${visor.src}`, e.detail);
+  });
+
+  function renderSala() {
+    const pieza = PIEZAS[indice];
+    // Sin `src` en piezas.js: "Modelo pendiente" directo, sin modelo ni RA
+    pendiente.classList.toggle("visible", !pieza.src);
+    if (pieza.src) visor.src = pieza.srcDetalle ?? pieza.src; // aquí el visor es la vista de cerca: versión de detalle si existe
+    else visor.src = null; // vacía el visor para que no quede el modelo de la pieza anterior
+    visor.alt = pieza.titulo;
+    tituloPieza.textContent = pieza.titulo;
+    textoPieza.textContent = pieza.texto;
+
+    visitadas.add(indice);
+    guardarProgreso();
+
+    const pct = Math.round((visitadas.size / PIEZAS.length) * 100);
+    progresoFill.style.width = pct + "%";
+    progresoLabel.textContent = `Pieza ${indice + 1} de ${PIEZAS.length} · ${visitadas.size}/${PIEZAS.length} visitadas`;
+
+    btnAnterior.disabled = indice === 0;
+    btnSiguiente.textContent = (indice === PIEZAS.length - 1) ? "Finalizar recorrido →" : "Siguiente →";
+  }
+
+  btnAnterior.addEventListener("click", () => {
+    if (indice > 0) { indice--; renderSala(); }
+  });
+
+  btnSiguiente.addEventListener("click", () => {
+    if (indice < PIEZAS.length - 1) {
+      indice++;
+      renderSala();
+    } else if (visitadas.size === PIEZAS.length) {
+      sala.style.display = "none";
+      final.classList.add("activo");
+    }
+  });
+
+  document.getElementById("btnReiniciar").addEventListener("click", () => {
+    indice = 0;
+    visitadas = new Set();
+    guardarProgreso();
+    final.classList.remove("activo");
+    sala.style.display = "block";
+    renderSala();
+  });
+
+  renderSala();
+</script>
+
+</body>
+</html>
